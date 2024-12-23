@@ -1,6 +1,5 @@
 import * as outputs from "../outputs.json";
 import { CognitoJwtVerifier } from "aws-jwt-verify";
-import { fetchJson } from "aws-jwt-verify/https";
 import {
   CognitoIdentityProviderClient,
   InitiateAuthCommand,
@@ -49,21 +48,20 @@ async function getJWTsForUser() {
 }
 
 async function getAccessTokenForClientCredentials() {
-  return fetchJson<{ access_token: string }>(
-    `${hostedUIUrl}/oauth2/token`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        authorization: `Basic ${Buffer.from(
-          `${clientIdWithSecret}:${clientIdWithSecretValue}`
-        ).toString("base64")}`,
-      },
+  return fetch(`${hostedUIUrl}/oauth2/token`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      authorization: `Basic ${Buffer.from(
+        `${clientIdWithSecret}:${clientIdWithSecretValue}`
+      ).toString("base64")}`,
     },
-    Buffer.from(
+    body: Buffer.from(
       `grant_type=client_credentials&scope=${encodeURIComponent(scope)}`
-    )
-  ).then((res) => ({ access: res["access_token"] }));
+    ),
+  })
+    .then((res) => res.json())
+    .then(({ access_token }) => ({ access: access_token }));
 }
 
 test("Verify ID token for user: happy flow", async () => {
@@ -122,21 +120,24 @@ test("Verify Access token for client credentials: scope check", async () => {
 test("HTTP API Lambda authorizer allows access with valid token", async () => {
   const JWTs = await userSigninJWTs;
   return expect(
-    fetchJson(httpApiEndpoint, {
+    fetch(httpApiEndpoint, {
       headers: {
         authorization: JWTs.id,
       },
-    })
+    }).then((res) => res.json())
   ).resolves.toMatchObject({ private: "content!" });
 });
 
 test("HTTP API Lambda authorizer does not allow access with wrong token", async () => {
   const JWTs = await userSigninJWTs;
   return expect(
-    fetchJson(httpApiEndpoint, {
+    fetch(httpApiEndpoint, {
       headers: {
         authorization: JWTs.access,
       },
+    }).then((res) => {
+      if (!res.ok) throw new Error(`${res.status}`);
+      return res;
     })
   ).rejects.toThrow("403");
 });
