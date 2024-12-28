@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import path = require("path");
@@ -22,6 +23,13 @@ export class CognitoStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       signInAliases: {
         email: true,
+      },
+      passwordPolicy: {
+        minLength: 20,
+        requireDigits: false,
+        requireLowercase: false,
+        requireSymbols: false,
+        requireUppercase: false,
       },
     });
     new cdk.CfnOutput(this, "UserPoolId", {
@@ -61,7 +69,7 @@ export class CognitoStack extends cdk.Stack {
       value: user.username!,
     });
 
-    const password = "Testing1234@";
+    const password = cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID));
     const setPasswordApiCall: cdk.custom_resources.AwsSdkCall = {
       service: "CognitoIdentityServiceProvider",
       action: "adminSetUserPassword",
@@ -244,6 +252,9 @@ export class CognitoStack extends cdk.Stack {
         scopes,
         callbackUrls: [`https://${props.albDomainName}/oauth2/idpresponse`],
       },
+    });
+    new cdk.CfnOutput(this, "UserPoolClientIdAlb", {
+      value: albClient.userPoolClientId,
     });
 
     const hostedZoneRef = cdk.aws_route53.HostedZone.fromHostedZoneAttributes(

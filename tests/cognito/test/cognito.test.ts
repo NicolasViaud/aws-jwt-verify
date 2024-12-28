@@ -4,6 +4,7 @@ import {
   CognitoIdentityProviderClient,
   InitiateAuthCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
+import * as hostedUi from "./hosted-ui";
 
 const {
   AwsJwtCognitoTestStack: {
@@ -16,12 +17,14 @@ const {
     HostedUIUrl: hostedUIUrl,
     UserPoolClientWithSecretClientId: clientIdWithSecret,
     UserPoolClientWithSecretValue: clientIdWithSecretValue,
+    UserPoolClientIdAlb: clientIdAlb,
     HttpApiEndpoint: httpApiEndpoint,
   },
 } = outputs;
 
-let userSigninJWTs: Promise<{ access: string; id: string }>;
-let clientCredentialsJWTs: Promise<{ access: string }>;
+let userSigninJWTs: { access: string; id: string };
+let clientCredentialsJWTs: { access: string };
+let albSigninJWTs: Awaited<ReturnType<(typeof hostedUi)["signIn"]>>;
 const cognitoVerifier = CognitoJwtVerifier.create({
   userPoolId,
 });
@@ -34,9 +37,13 @@ const SIGN_IN_AS_USER = new InitiateAuthCommand({
     PASSWORD: password,
   },
 });
-beforeAll(() => {
-  userSigninJWTs = getJWTsForUser();
-  clientCredentialsJWTs = getAccessTokenForClientCredentials();
+beforeAll(async () => {
+  [userSigninJWTs, clientCredentialsJWTs, albSigninJWTs] = await Promise.all([
+    getJWTsForUser(),
+    getAccessTokenForClientCredentials(),
+    hostedUi.signIn(),
+    cognitoVerifier.hydrate(),
+  ]);
 });
 
 async function getJWTsForUser() {
@@ -65,9 +72,8 @@ async function getAccessTokenForClientCredentials() {
 }
 
 test("Verify ID token for user: happy flow", async () => {
-  const JWTs = await userSigninJWTs;
   return expect(
-    cognitoVerifier.verify(JWTs.id, {
+    cognitoVerifier.verify(userSigninJWTs.id, {
       clientId: userPoolWebClientId,
       tokenUse: "id",
     })
@@ -75,9 +81,8 @@ test("Verify ID token for user: happy flow", async () => {
 });
 
 test("Verify ID token for user: expired token", async () => {
-  const JWTs = await userSigninJWTs;
   return expect(
-    cognitoVerifier.verify(JWTs.id, {
+    cognitoVerifier.verify(userSigninJWTs.id, {
       clientId: userPoolWebClientId,
       tokenUse: "id",
       graceSeconds: -3600 - 10, // token expires after 3600 seconds, subtract additional 10 seconds to account for any clock diff
@@ -86,9 +91,8 @@ test("Verify ID token for user: expired token", async () => {
 });
 
 test("Verify Access token for user: happy flow", async () => {
-  const JWTs = await userSigninJWTs;
   return expect(
-    cognitoVerifier.verify(JWTs.access, {
+    cognitoVerifier.verify(userSigninJWTs.access, {
       clientId: userPoolWebClientId,
       tokenUse: "access",
     })
@@ -96,9 +100,8 @@ test("Verify Access token for user: happy flow", async () => {
 });
 
 test("Verify Access token for user: scope check", async () => {
-  const JWTs = await userSigninJWTs;
   return expect(
-    cognitoVerifier.verify(JWTs.access, {
+    cognitoVerifier.verify(userSigninJWTs.access, {
       clientId: userPoolWebClientId,
       tokenUse: "access",
       scope: ["aws.cognito.signin.user.admin"],
@@ -107,9 +110,8 @@ test("Verify Access token for user: scope check", async () => {
 });
 
 test("Verify Access token for client credentials: scope check", async () => {
-  const JWTs = await clientCredentialsJWTs;
   return expect(
-    cognitoVerifier.verify(JWTs.access, {
+    cognitoVerifier.verify(clientCredentialsJWTs.access, {
       clientId: clientIdWithSecret,
       tokenUse: "access",
       scope,
@@ -118,26 +120,38 @@ test("Verify Access token for client credentials: scope check", async () => {
 });
 
 test("HTTP API Lambda authorizer allows access with valid token", async () => {
-  const JWTs = await userSigninJWTs;
   return expect(
     fetch(httpApiEndpoint, {
       headers: {
-        authorization: JWTs.id,
+        authorization: userSigninJWTs.id,
       },
     }).then((res) => res.json())
   ).resolves.toMatchObject({ private: "content!" });
 });
 
 test("HTTP API Lambda authorizer does not allow access with wrong token", async () => {
-  const JWTs = await userSigninJWTs;
   return expect(
     fetch(httpApiEndpoint, {
       headers: {
-        authorization: JWTs.access,
+        authorization: userSigninJWTs.access,
       },
     }).then((res) => {
       if (!res.ok) throw new Error(`${res.status}`);
       return res;
     })
   ).rejects.toThrow("403");
+});
+
+test("Verify Cognito Access token from ALB", async () => {
+  return expect(
+    cognitoVerifier.verify(albSigninJWTs.cognitoAccessToken, {
+      clientId: clientIdAlb,
+      tokenUse: "access",
+    })
+  ).resolves.toMatchObject({ client_id: clientIdAlb });
+});
+
+test("Verify Data token from ALB", async () => {
+  // todo
+  throw new Error("Not implemented");
 });
